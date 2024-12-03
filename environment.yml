@@ -1,0 +1,10 @@
+name: ml_environment
+dependencies:
+  - python=3.9
+  - pandas
+  - numpy
+  - scikit-learn
+  - xgboost
+  - seaborn
+  - matplotlib
+  - imbalanced-learn
