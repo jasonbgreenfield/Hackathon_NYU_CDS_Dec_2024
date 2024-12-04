@@ -1,7 +1,7 @@
 """
 Name: __main__.py
 Date: Dec 3, 2024
-Author: Jason Greenfield, Ben Guinaudeau, Edwin Kamau, Yuchunji Lu
+Author: Jason Greenfield, Ben Guinaudeau, Edwin Kamau, Yucheng Lu
 Purpose: run inference for CDS Hackathon task: use traditional ml methods for health data
 Data In: hackathon syntehtic data
 Machine: NYU hpc
