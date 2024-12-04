@@ -25,6 +25,8 @@ from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegression
+from pytorch_tabnet.tab_model import TabNetClassifier
+import torch
 
 
 TESTING = False
@@ -290,10 +292,12 @@ def models_test_4(df):
     kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
     for name, model in models.items():
+        start_time = time.time()
         print(f"Evaluating {name} with cross-validation...")
         cv_score = cross_val_score(model, X_train_poly, y_train, cv=kf, scoring='roc_auc')
         cv_results[name] = np.mean(cv_score)
         print(f"{name} Mean AUC: {cv_results[name]:.4f}")
+        print(f'Time for {name}: {time.time() - start_time}\n')
 
     # Evaluate ensemble
     print("Evaluating Ensemble with cross-validation...")
@@ -302,13 +306,145 @@ def models_test_4(df):
     print(f"Ensemble Mean AUC: {cv_results['Ensemble']:.4f}")
 
     # Train and evaluate the ensemble on test set
+    start_time = time.time()
     ensemble.fit(X_train_poly, y_train)
     y_pred = ensemble.predict(X_test_poly)
     y_pred_proba = ensemble.predict_proba(X_test_poly)[:, 1]
+    print(f'Time for Ensemble: {time.time() - start_time}\n')
 
     print("\nFinal Test Evaluation for Ensemble:")
     print("Classification Report:\n", classification_report(y_test, y_pred))
     print("ROC AUC Score:", roc_auc_score(y_test, y_pred_proba))
+
+    """
+    OUTPUT FROM TESTING ON 12/3/2024 20:31:44 TESTING
+    >>> models_test_4(df)
+    Evaluating Logistic Regression with cross-validation...
+    Logistic Regression Mean AUC: 0.8843
+    Time for Logistic Regression: 15.956579446792603
+    
+    Evaluating Random Forest with cross-validation...
+    Random Forest Mean AUC: 0.8622
+    Time for Random Forest: 448.7936339378357
+    
+    Evaluating Gradient Boosting with cross-validation...
+    Gradient Boosting Mean AUC: 0.8866
+    Time for Gradient Boosting: 2236.970309495926
+    
+    Evaluating XGBoost with cross-validation...
+    XGBoost Mean AUC: 0.8841
+    Time for XGBoost: 50.94605112075806
+    
+    Evaluating Ensemble with cross-validation...
+    Ensemble Mean AUC: 0.8878
+    
+    Final Test Evaluation for Ensemble:
+    Classification Report:
+                   precision    recall  f1-score   support
+    
+               0       0.97      0.96      0.97     35918
+               1       0.43      0.54      0.48      2114
+    
+        accuracy                           0.94     38032
+       macro avg       0.70      0.75      0.72     38032
+    weighted avg       0.94      0.94      0.94     38032
+    
+    ROC AUC Score: 0.8888029171671014
+    """
+
+
+def model_testing_5_tabnet(df, balance=True):
+    """
+    Train and evaluate a TabNet model for binary classification with a balanced dataset.
+
+    Returns:
+    - model: Trained TabNetClassifier.
+    - metrics: A dictionary containing ROC AUC and classification report.
+    """
+    if balance:
+        # Balance the dataset (optional, depending on strategy)
+        # Here, we'll use undersampling for simplicity
+        df_majority = df[df.label == 0]
+        df_minority = df[df.label == 1]
+
+        df_majority_downsampled = resample(df_majority, replace=False, n_samples=len(df_minority), random_state=42)
+
+        df_balanced = pd.concat([df_majority_downsampled, df_minority])
+
+        X = df_balanced.drop('label', axis=1)
+        y = df_balanced['label']
+
+        # Split the data into train (80%) and eval + test (20%)
+        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+        # Split the eval + test data (X_temp, y_temp) into eval (50%) and test (50%) of the remaining 20%
+        X_eval, X_test, y_eval, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42,
+                                                          stratify=y_temp)
+    else:
+        # Separate the features and labels
+        X = df.drop('label', axis=1)
+        y = df['label']
+
+        # Split the data into train (80%) and eval + test (20%)
+        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+        # Split the eval + test data (X_temp, y_temp) into eval (50%) and test (50%) of the remaining 20%
+        X_eval, X_test, y_eval, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42,
+                                                          stratify=y_temp)
+
+    # Standardize features
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # Convert to numpy arrays (required by TabNet)
+    X_train_scaled, X_test_scaled, X_eval_scaled = np.array(X_train_scaled), np.array(X_test_scaled), np.array(X_eval)
+    y_train, y_test, y_eval = np.array(y_train), np.array(y_test), np.array(y_eval)
+
+    # Define TabNet model
+    print('initializing TabNetClassifier...')
+    model = TabNetClassifier(
+        n_d=8,  # Width of decision prediction layer
+        n_a=8,  # Width of attention embedding
+        n_steps=3,  # Number of decision steps
+        gamma=1.3,  # Relaxation parameter
+        optimizer_fn=torch.optim.Adam,
+        optimizer_params=dict(lr=2e-2),
+        scheduler_params={"step_size": 10, "gamma": 0.9},
+        scheduler_fn=torch.optim.lr_scheduler.StepLR,
+        verbose=1
+    )
+
+    # Train TabNet model
+    print('fitting TabNetClassifier...')
+    model.fit(
+        X_train_scaled, y_train,
+        eval_set=[(X_eval_scaled, y_eval)],
+        eval_metric=['auc'],
+        max_epochs=50,
+        patience=10,
+        batch_size=1024,
+        virtual_batch_size=128
+    )
+
+    # Predict and evaluate
+    print('getting predictions...')
+    y_pred = model.predict(X_test_scaled)
+    y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+
+    roc_auc = roc_auc_score(y_test, y_pred_proba)
+    report = classification_report(y_test, y_pred)
+
+    metrics = {
+        "ROC AUC": roc_auc,
+        "Classification Report": report
+    }
+
+    print("\nMetrics:")
+    print(f"ROC AUC: {roc_auc:.4f}")
+    print(report)
+
+    return model, metrics
 
 
 def main_testing():
